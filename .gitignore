@@ -1,0 +1,25 @@
+# Python cache and logs
+__pycache__/
+*.py[cod]
+*.log
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# VS Code
+.vscode/
+
+# Project data and artifacts (do not push)
+src/datasets/data/
+src/checkpoints/
+src/eval_outputs_paper/
+src/tmp_eval/
+
+# Common model artifact files
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors

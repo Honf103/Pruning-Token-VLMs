@@ -1,0 +1,39 @@
+====================================================================================================
+IMAGE & CHECKPOINT VALIDATION
+====================================================================================================
+
+1. IMAGE FILE
+   ✓ Exists: 0.22 MB
+   Format: JPEG, Size: (960, 639), Mode: RGB
+   Resized: (224, 224, 3), dtype: uint8
+   Pixel value range: [6, 255]
+   Tensor shape: torch.Size([3, 224, 224])
+   Tensor range: [0.0235, 1.0000]
+   Mean: 0.4167, Std: 0.2552
+
+2. CHECKPOINT FILE
+   ✓ Exists: 2697.83 MB
+   Keys: ['epoch', 'model_state_dict', 'optimizer_state_dict', 'avg_loss']
+   Model params: 610 tensors
+   Epochs trained: 1
+   Avg loss: 1.6996640120983124
+   - vision_encoder.model.vision_model.embeddings.class: (768,) torch.float32
+   - vision_encoder.model.vision_model.embeddings.patch: (768, 3, 32, 32) torch.float32
+   - vision_encoder.model.vision_model.embeddings.posit: (50, 768) torch.float32
+   - vision_encoder.model.vision_model.pre_layrnorm.wei: (768,) torch.float32
+   - vision_encoder.model.vision_model.pre_layrnorm.bia: (768,) torch.float32
+
+3. TRAINING vs INFERENCE SETTINGS
+   Training keep_ratio: 0.25
+   Inference keep_ratio: 0.5
+   ⚠ MISMATCH: Training used 0.25, inference uses 0.5
+
+   Training alpha: 0.6
+   Inference alpha: 0.6
+   ✓ MATCH
+
+4. DATASET FILES
+   ✓ LLaVA metadata: 203455113 bytes
+   ✓ COCO images: 118287 images
+
+====================================================================================================

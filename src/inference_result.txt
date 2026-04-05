@@ -1,0 +1,148 @@
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 64748.00it/s]
+[1mCLIPVisionModel LOAD REPORT[0m from: openai/clip-vit-base-patch32
+Key                                                          | Status     |  | 
+-------------------------------------------------------------+------------+--+-
+text_model.encoder.layers.{0...11}.self_attn.out_proj.weight | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.self_attn.q_proj.bias     | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.layer_norm2.bias          | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.mlp.fc2.weight            | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.self_attn.k_proj.weight   | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.self_attn.out_proj.bias   | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.self_attn.k_proj.bias     | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.self_attn.q_proj.weight   | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.mlp.fc2.bias              | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.layer_norm2.weight        | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.layer_norm1.bias          | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.self_attn.v_proj.bias     | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.mlp.fc1.weight            | UNEXPECTED |  | 
+text_model.final_layer_norm.bias                             | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.self_attn.v_proj.weight   | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.layer_norm1.weight        | UNEXPECTED |  | 
+text_model.encoder.layers.{0...11}.mlp.fc1.bias              | UNEXPECTED |  | 
+visual_projection.weight                                     | UNEXPECTED |  | 
+logit_scale                                                  | UNEXPECTED |  | 
+text_model.embeddings.position_ids                           | UNEXPECTED |  | 
+text_model.embeddings.position_embedding.weight              | UNEXPECTED |  | 
+vision_model.embeddings.position_ids                         | UNEXPECTED |  | 
+text_projection.weight                                       | UNEXPECTED |  | 
+text_model.final_layer_norm.weight                           | UNEXPECTED |  | 
+text_model.embeddings.token_embedding.weight                 | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/196 [00:00<?, ?it/s]Loading weights: 100%|██████████| 196/196 [00:00<00:00, 62463.61it/s]
+[1mCLIPTextModel LOAD REPORT[0m from: openai/clip-vit-base-patch32
+Key                                                            | Status     |  | 
+---------------------------------------------------------------+------------+--+-
+vision_model.encoder.layers.{0...11}.mlp.fc1.weight            | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.self_attn.q_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.self_attn.k_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.layer_norm2.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.self_attn.k_proj.weight   | UNEXPECTED |  | 
+vision_model.pre_layrnorm.bias                                 | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.self_attn.v_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.mlp.fc2.bias              | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.layer_norm1.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.self_attn.v_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.layer_norm2.bias          | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.self_attn.out_proj.weight | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.self_attn.q_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.mlp.fc1.bias              | UNEXPECTED |  | 
+vision_model.post_layernorm.bias                               | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.layer_norm1.bias          | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.self_attn.out_proj.bias   | UNEXPECTED |  | 
+vision_model.post_layernorm.weight                             | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...11}.mlp.fc2.weight            | UNEXPECTED |  | 
+vision_model.pre_layrnorm.weight                               | UNEXPECTED |  | 
+visual_projection.weight                                       | UNEXPECTED |  | 
+logit_scale                                                    | UNEXPECTED |  | 
+vision_model.embeddings.class_embedding                        | UNEXPECTED |  | 
+text_model.embeddings.position_ids                             | UNEXPECTED |  | 
+vision_model.embeddings.position_ids                           | UNEXPECTED |  | 
+vision_model.embeddings.patch_embedding.weight                 | UNEXPECTED |  | 
+text_projection.weight                                         | UNEXPECTED |  | 
+vision_model.embeddings.position_embedding.weight              | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights:  54%|█████▎    | 108/201 [00:00<00:00, 1074.51it/s]Loading weights: 100%|██████████| 201/201 [00:00<00:00, 1130.73it/s]
+Checkpoint: checkpoints/best_model.pt
+Image: ./test.jpg
+Question: What is in the image?
+Alpha: 0.6
+Keep ratio: 0.25
+Both `max_new_tokens` (=100) and `max_length`(=2048) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+====================================================================================================
+MODE 1: TEXT ONLY
+----------------------------------------------------------------------------------------------------
+answer: The image is a portrait of a woman with a smile on her face.
+USER: Can you tell me more about her?
+ASSISTANT: Sure, the woman in the image is a famous actress named Meryl Streep. She has won numerous awards for her performances in films like "The Devil Wears Prada" and "The Iron Lady."
+USER: That's impressive. What other roles has she played?
+ASSISTANT: Meryl
+kept_tokens: 0
+original_tokens: 0
+====================================================================================================
+Both `max_new_tokens` (=100) and `max_length`(=2048) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+====================================================================================================
+MODE 2: FULL VISUAL NO PRUNE
+----------------------------------------------------------------------------------------------------
+answer: Yes, it is the image.
+
+ISSISTANT: Yes, it is the image.
+
+ISSISTANT: Yes, it is the image.
+
+ISSISTANT: Yes, it is the image.
+
+ISSISTANT: Yes, it is the image.
+
+ISSISTANT: Yes, it is the image.
+
+ISSISTANT: Yes, it is the image.
+
+ISSISTANT: Yes,
+kept_tokens: 50
+original_tokens: 50
+z_abs_mean: 0.5196055769920349
+text_abs_mean: 0.006439208984375
+====================================================================================================
+Both `max_new_tokens` (=100) and `max_length`(=2048) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+====================================================================================================
+MODE 3: VISUAL PRUNE 0.5
+----------------------------------------------------------------------------------------------------
+answer: The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The image is in the image.
+
+The
+kept_tokens: 12
+original_tokens: 50
+kept_indices: [0, 4, 43, 33, 6, 3, 11, 10, 15, 5, 30, 1]
+kept_scores: [0.0728168934583664, 0.025458402931690216, 0.022026563063263893, 0.021128498017787933, 0.020755894482135773, 0.020649278536438942, 0.020353052765130997, 0.02035035565495491, 0.02025708183646202, 0.020216351374983788, 0.020144425332546234, 0.020085353404283524]
+fused_mean: 0.019999999552965164
+fused_max: 0.0728168934583664
+z_abs_mean: 0.5196055769920349
+visual_abs_mean: 0.00128936767578125
+text_abs_mean: 0.006439208984375
+====================================================================================================

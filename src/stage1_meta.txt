@@ -1,0 +1,5 @@
+stage: alignment_complete
+avg_loss: 0.7113538607159436
+val_vqa_soft_accuracy: 0.7819999999999999
+projector_hidden_dim: 2048
+ia_hidden_dim: 512

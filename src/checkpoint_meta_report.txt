@@ -1,0 +1,78 @@
+=== checkpoints/best_model/training_state.pt ===
+epoch: 3
+global_step: None
+best_val_loss: None
+best_vqa_accuracy: None
+keep_ratio: 0.45
+use_merging: None
+dynamic_budget_enabled: False
+dynamic_budget_min_keep_ratio: 0.2
+dynamic_budget_max_keep_ratio: 0.7
+train_pruning_mode: structural
+phase: None
+
+=== checkpoints/best_model_3layer_backup/training_state.pt ===
+epoch: 1
+global_step: None
+best_val_loss: None
+best_vqa_accuracy: None
+keep_ratio: 0.7
+use_merging: None
+dynamic_budget_enabled: False
+dynamic_budget_min_keep_ratio: 0.45
+dynamic_budget_max_keep_ratio: 0.65
+train_pruning_mode: structural
+phase: None
+
+=== checkpoints/latest/training_state.pt ===
+epoch: 3
+global_step: None
+best_val_loss: None
+best_vqa_accuracy: None
+keep_ratio: None
+use_merging: None
+dynamic_budget_enabled: None
+dynamic_budget_min_keep_ratio: None
+dynamic_budget_max_keep_ratio: None
+train_pruning_mode: None
+phase: None
+
+=== checkpoints/latest_3layer_backup/training_state.pt ===
+epoch: 1
+global_step: None
+best_val_loss: None
+best_vqa_accuracy: None
+keep_ratio: None
+use_merging: None
+dynamic_budget_enabled: None
+dynamic_budget_min_keep_ratio: None
+dynamic_budget_max_keep_ratio: None
+train_pruning_mode: None
+phase: None
+
+=== checkpoints/stage1/training_state.pt ===
+epoch: None
+global_step: None
+best_val_loss: None
+best_vqa_accuracy: None
+keep_ratio: None
+use_merging: None
+dynamic_budget_enabled: None
+dynamic_budget_min_keep_ratio: None
+dynamic_budget_max_keep_ratio: None
+train_pruning_mode: None
+phase: None
+
+=== checkpoints/stage1_3layer_backup/training_state.pt ===
+epoch: None
+global_step: None
+best_val_loss: None
+best_vqa_accuracy: None
+keep_ratio: None
+use_merging: None
+dynamic_budget_enabled: None
+dynamic_budget_min_keep_ratio: None
+dynamic_budget_max_keep_ratio: None
+train_pruning_mode: None
+phase: None
+
