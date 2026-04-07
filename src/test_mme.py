@@ -962,7 +962,7 @@ def parse_args():
         description="MME evaluation for PruningVLM",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--checkpoint", default=os.path.join(CKPT_ROOT, "best_model_accuracy"),
+    p.add_argument("--checkpoint", default=os.path.join(CKPT_ROOT, "best_model_fastbest"),
                    help="Checkpoint directory")
     p.add_argument("--mme_data_dir", default=MME_DATA_DIR,
                    help="Root MME directory (should contain a 'data/' subdir with Parquet files)")

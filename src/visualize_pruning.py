@@ -43,9 +43,9 @@ from utils.misc import set_seed
 # Constants
 # ─────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-CKPT_DIR   = os.path.join(BASE_DIR, "checkpoints", "best_model_accuracy")
+CKPT_DIR   = os.path.join(BASE_DIR, "checkpoints", "best_model_fastbest")
 IMG_PATH   = os.path.join(BASE_DIR, "test_1.jpg")
-PROMPT     = "Are there 5 peoples in the image? If not, how many people are there? Who is the most handsome?"
+PROMPT     = "Are there 5 peoples in the image?"
 PATCH_SIZE = 14          # CLIP ViT-L/14
 GRID_SIZE  = 24          # 336 / 14 = 24
 N_TOKENS   = GRID_SIZE * GRID_SIZE   # 576

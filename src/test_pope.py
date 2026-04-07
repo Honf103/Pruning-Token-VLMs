@@ -848,7 +848,7 @@ def parse_args():
         description="POPE evaluation for PruningVLM",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--checkpoint", default=os.path.join(CKPT_ROOT, "best_model_accuracy"),
+    p.add_argument("--checkpoint", default=os.path.join(CKPT_ROOT, "best_model_fastbest"),
                    help="Path to checkpoint directory")
     p.add_argument("--keep_ratio", type=float, default=0.7)
     p.add_argument("--use_merging", action="store_true",

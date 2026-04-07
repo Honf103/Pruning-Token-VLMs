@@ -1988,9 +1988,9 @@ if __name__ == "__main__":
     import os as _os
     _os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-    STAGE1_DIR = os.path.join(CHECKPOINT_ROOT, "stage1_accuracy")
-    BEST_STAGE2_DIR_NAME = "best_model_accuracy"
-    LATEST_STAGE2_DIR_NAME = "latest_accuracy"
+    STAGE1_DIR = os.path.join(CHECKPOINT_ROOT, "state_1_fastbest")
+    BEST_STAGE2_DIR_NAME = "best_model_fastbest"
+    LATEST_STAGE2_DIR_NAME = "latest_fastbest"
     STAGE2_LATEST_DIR = os.path.join(CHECKPOINT_ROOT, LATEST_STAGE2_DIR_NAME)
     _stage1_done = os.path.exists(os.path.join(STAGE1_DIR, "training_state.pt"))
     _stage2_resume_from = (
@@ -1999,10 +1999,10 @@ if __name__ == "__main__":
         else None
     )
 
-    stage1_max_samples = 50_000
-    stage2_max_samples = 80_000
+    stage1_max_samples = 100_000
+    stage2_max_samples = 200_000
     stage2_num_epochs = 2
-    val_max_samples = 200
+    val_max_samples = 500
 
     print("=" * 60)
     print("Training target: SOTA-oriented accuracy under ~1 day budget")
@@ -2084,7 +2084,7 @@ if __name__ == "__main__":
         dynamic_budget_max_keep_ratio=0.70,
         dynamic_budget_supervision_mode="heuristic",
         multi_ratio_enabled=True,
-        multi_ratio_values=[0.111, 0.222, 0.333, 0.4, 0.5, 1.0],
+        multi_ratio_values=[0.056, 0.111, 0.223, 0.4, 0.5, 1.0],
         multi_ratio_probs=[1.5, 1.5, 1.4, 1.2, 1.0, 1.0],
         multi_ratio_low_focus_start_ratio=0.70,
         multi_ratio_low_focus_power=0.5,
