@@ -141,6 +141,62 @@ def compute_budget_loss(
     return F.mse_loss(keep_per_sample, target)
 
 
+@torch.no_grad()
+def compute_alpha_supervision(
+    model: "PruningVLM",
+    images: torch.Tensor,
+    clip_input_ids: torch.Tensor,
+    clip_attention_mask: torch.Tensor,
+    llm_input_ids: torch.Tensor,
+    llm_attention_mask: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float = 0.5,
+) -> torch.Tensor:
+    """
+    Compute alpha supervision target using teacher LM loss.
+
+    For each batch:
+      loss_ia  = LM loss when pruning with alpha=1.0 (instruction-aware only)
+      loss_cls = LM loss when pruning with alpha=0.0 (CLS saliency only)
+      alpha*   = sigmoid((loss_cls - loss_ia) / temperature)
+    """
+    model.score_fusion.alpha_override = 1.0
+    out_ia = model(
+        images=images,
+        input_ids=clip_input_ids,
+        attention_mask=clip_attention_mask,
+        llm_input_ids=llm_input_ids,
+        llm_attention_mask=llm_attention_mask,
+        labels=labels,
+        use_hard_pruning=True,
+        train_pruning_mode="structural",
+    )
+    loss_ia = out_ia.get("loss", None)
+
+    model.score_fusion.alpha_override = 0.0
+    out_cls = model(
+        images=images,
+        input_ids=clip_input_ids,
+        attention_mask=clip_attention_mask,
+        llm_input_ids=llm_input_ids,
+        llm_attention_mask=llm_attention_mask,
+        labels=labels,
+        use_hard_pruning=True,
+        train_pruning_mode="structural",
+    )
+    loss_cls = out_cls.get("loss", None)
+
+    model.score_fusion.alpha_override = None
+
+    if loss_ia is None or loss_cls is None:
+        return None
+    if not (torch.isfinite(loss_ia) and torch.isfinite(loss_cls)):
+        return None
+
+    alpha_target = torch.sigmoid((loss_cls - loss_ia) / temperature)
+    return alpha_target.detach().expand(images.size(0))
+
+
 
 def linear_temp_schedule(epoch, num_epochs, start_temp=1.5, end_temp=0.3):
     if num_epochs <= 1:
@@ -1168,6 +1224,11 @@ def train_stage2(
     lambda_budget: float = 0.05,
     budget_warmup_ratio: float = 0.0,  # 0 = no warmup; budget active from step 1
     lambda_distill: float = 0.5,
+    lambda_align: float = 0.3,
+    lambda_alpha_kd: float = 0.1,
+    alpha_kd_every_n_steps: int = 10,
+    question_conditioned_alpha: bool = True,
+    attn_distill_layers: list = None,
     start_temp: float = 1.5,
     end_temp: float = 0.5,
     use_ste: bool = False,
@@ -1240,92 +1301,41 @@ def train_stage2(
         dynamic_budget_min_keep_ratio=dynamic_budget_min_keep_ratio,
         dynamic_budget_max_keep_ratio=dynamic_budget_max_keep_ratio,
         use_merging=True,
+        question_conditioned_alpha=question_conditioned_alpha,
+        text_dim=768,
+        attn_distill_layers=attn_distill_layers or [8, 16, 23],
     ).to(device)
 
-    # ── Stage 2: CLIP encoders always frozen ────────────────────────────
+    if stage1_checkpoint is not None:
+        _s1_path = os.path.join(stage1_checkpoint, "non_llm_trainables.pt")
+        if os.path.exists(_s1_path):
+            _s1 = torch.load(_s1_path, map_location=device)
+            _s1_state = _s1["trainable_non_llm_state_dict"]
+            _model_state = model.state_dict()
+            _scorer_prefixes = ("cls_scorer.", "instruction_aware.", "text_importance.", "score_fusion.")
+            _compatible = {
+                k: v
+                for k, v in _s1_state.items()
+                if any(k.startswith(pfx) for pfx in _scorer_prefixes)
+                and k in _model_state
+                and _model_state[k].shape == v.shape
+            }
+            model.load_state_dict(_compatible, strict=False)
+            print(f"[Stage2] Loaded {len(_compatible)} scorer weights from Stage 1.")
+
     freeze_module(model.vision_encoder)
     freeze_module(model.text_encoder)
+    freeze_module(model.projector)
+    for p in model.llm.model.parameters():
+        p.requires_grad = False
 
-    if freeze_llm:
-        # freeze_llm=True: LLM + projector both frozen.
-        # Use original LLaVA-1.5 projector (already loaded by PruningVLM.__init__
-        # via _llava_projector). Do NOT overwrite with Stage 1 projector — Stage 1
-        # fine-tunes projector on VQA-v2 which biases features and drops Cognition.
-        # Only load scorer weights from Stage 1 (if any were saved there).
-        if stage1_checkpoint is not None:
-            _s1_path = os.path.join(stage1_checkpoint, "non_llm_trainables.pt")
-            if os.path.exists(_s1_path):
-                _s1 = torch.load(_s1_path, map_location=device)
-                _s1_state = _s1["trainable_non_llm_state_dict"]
-                _model_state = model.state_dict()
-                # Load ONLY scorer weights — skip projector keys
-                _scorer_prefixes = ("cls_scorer.", "instruction_aware.",
-                                    "text_importance.", "score_fusion.")
-                _compatible = {
-                    k: v for k, v in _s1_state.items()
-                    if any(k.startswith(pfx) for pfx in _scorer_prefixes)
-                    and k in _model_state and _model_state[k].shape == v.shape
-                }
-                model.load_state_dict(_compatible, strict=False)
-                print(f"[Stage2] freeze_llm=True: loaded {len(_compatible)} scorer "
-                      f"weights from Stage 1 (projector kept as LLaVA-1.5 pretrained).")
-        # Freeze LLM always
-        for p in model.llm.model.parameters():
-            p.requires_grad = False
-        # Conditionally unfreeze projector for aggressive pruning regimes
-        _effective_min_ratio = min(float(r) for r in multi_ratio_values if float(r) > 0) if multi_ratio_values else float(keep_ratio)
-        _should_unfreeze_projector = (
-            projector_unfreeze_threshold > 0.0
-            and _effective_min_ratio < projector_unfreeze_threshold
-        )
-        if _should_unfreeze_projector:
-            unfreeze_module(model.projector)
-            print(
-                f"[Stage2] Projector UNFROZEN (min ratio {_effective_min_ratio:.2f} "
-                f"< threshold {projector_unfreeze_threshold:.2f}) — "
-                f"will train with lr={projector_finetune_lr:.1e}."
-            )
-        else:
-            freeze_module(model.projector)
-        # Always train scorer
-        unfreeze_module(model.instruction_aware)
-        unfreeze_module(model.cls_scorer)
-        unfreeze_module(model.text_importance)
-        unfreeze_module(model.score_fusion)
-        if _should_unfreeze_projector:
-            print("[Stage2] Training scorer + projector (LLM frozen).")
-        else:
-            print("[Stage2] LLM + projector frozen — training scorer only (~7M params).")
-    else:
-        # LoRA path: load Stage 1 checkpoint (projector + scorer) as warm start
-        if stage1_checkpoint is not None:
-            _s1_path = os.path.join(stage1_checkpoint, "non_llm_trainables.pt")
-            if os.path.exists(_s1_path):
-                _s1 = torch.load(_s1_path, map_location=device)
-                _s1_state = _s1["trainable_non_llm_state_dict"]
-                _model_state = model.state_dict()
-                _compatible = {
-                    k: v for k, v in _s1_state.items()
-                    if k in _model_state and _model_state[k].shape == v.shape
-                }
-                model.load_state_dict(_compatible, strict=False)
-                print(f"[Stage2] LoRA path: loaded {len(_compatible)} weights from Stage 1.")
-        elif llava15_init:
-            load_llava15_pretrained_weights(
-                model, llava_model_name=llava15_model_name,
-                load_llm=False, load_projector=True,
-            )
-        unfreeze_module(model.projector)
-        unfreeze_module(model.instruction_aware)
-        unfreeze_module(model.cls_scorer)
-        unfreeze_module(model.text_importance)
-        unfreeze_module(model.score_fusion)
-        # LoRA path: LLM adapts via low-rank updates alongside projector + scorer.
-        # WARNING: may cause catastrophic forgetting of reasoning/cognition tasks.
-        model.llm = attach_lora_to_llm(
-            model.llm, r=16, lora_alpha=32, lora_dropout=0.05,
-        )
-        print("[Stage2] LoRA attached — training projector + scorer + LLM (LoRA).")
+    unfreeze_module(model.cls_scorer)
+    unfreeze_module(model.text_importance)
+    unfreeze_module(model.instruction_aware)
+    unfreeze_module(model.score_fusion)
+
+    print("[Stage2] Backbone FROZEN. Training scorer only (~12M params).")
+    print_trainable_parameters(model)
 
     model = model.to(device)
     
@@ -1360,11 +1370,6 @@ def train_stage2(
             model.load_state_dict(compatible, strict=False)
             print(f"[Resume] Loaded {len(compatible)} compatible keys.")
         
-        lora_dir = os.path.join(resume_from, "llm_lora_adapter")
-        if os.path.exists(lora_dir):
-            from peft import PeftModel
-            model.llm.model.load_adapter(lora_dir, adapter_name="default")
-
         # Load start_epoch and pending optimizer/scheduler state if available
         _ts_path = os.path.join(resume_from, "training_state.pt")
         if os.path.exists(_ts_path):
@@ -1698,6 +1703,8 @@ def train_stage2(
                     use_hard_pruning=False,
                     train_pruning_mode=current_pruning_mode,
                     compute_distill_loss=(current_lambda_distill_step > 0),
+                    compute_align_loss=(lambda_align > 0),
+                    align_layer=(attn_distill_layers[0] if attn_distill_layers else 8),
                 )
 
                 lm_loss = outputs.get("loss", None)
@@ -1748,10 +1755,39 @@ def train_stage2(
                 if distill_loss is None:
                     distill_loss = fused_scores.new_tensor(0.0)
 
+                align_loss = outputs.get("align_loss")
+                if align_loss is None:
+                    align_loss = fused_scores.new_tensor(0.0)
+
+                alpha_kd_loss = fused_scores.new_tensor(0.0)
+                if (
+                    question_conditioned_alpha
+                    and lambda_alpha_kd > 0
+                    and _global_step % alpha_kd_every_n_steps == 0
+                ):
+                    with torch.no_grad():
+                        alpha_target = compute_alpha_supervision(
+                            model=model,
+                            images=images,
+                            clip_input_ids=clip_input_ids,
+                            clip_attention_mask=clip_attention_mask,
+                            llm_input_ids=llm_input_ids,
+                            llm_attention_mask=llm_attention_mask,
+                            labels=labels,
+                            temperature=0.5,
+                        )
+                    if alpha_target is not None:
+                        predicted_alpha = outputs.get("predicted_alpha")
+                        if predicted_alpha is not None:
+                            pa = predicted_alpha.squeeze()
+                            alpha_kd_loss = F.mse_loss(pa, alpha_target.to(pa.device))
+
                 full_loss = (
                     lm_loss
                     + current_lambda_budget_step * budget_loss
                     + current_lambda_distill_step * distill_loss
+                    + lambda_align * align_loss
+                    + lambda_alpha_kd * alpha_kd_loss
                 )
 
                 if torch.isnan(full_loss) or torch.isinf(full_loss):
@@ -1816,11 +1852,11 @@ def train_stage2(
                     else -1.0
                 )
 
-                alpha_value = (
-                    torch.clamp(model.score_fusion.alpha.detach(), 0.0, 1.0).item()
-                    if hasattr(model.score_fusion, "alpha")
-                    else -1.0
-                )
+                predicted_alpha_out = outputs.get("predicted_alpha")
+                if predicted_alpha_out is None:
+                    alpha_value = -1.0
+                else:
+                    alpha_value = predicted_alpha_out.mean().item()
 
                 score_mean = outputs["fused_scores"].mean().item()
                 score_std = outputs["fused_scores"].std().item()
@@ -1845,13 +1881,15 @@ def train_stage2(
                     f"LM {lm_loss.item():.4f} | "
                     f"Budget {budget_loss.item():.4f} | "
                     f"Distill {distill_loss.item():.4f} | "
+                    f"AlignLoss {align_loss.item():.4f} | "
+                    f"AlphaKD {alpha_kd_loss.item():.4f} | "
                     f"Keep(schedule/sample) {scheduled_keep_ratio:.3f}/{current_keep_ratio:.3f} | "
                     f"Lambda(budget/distill) {current_lambda_budget_step:.4f}/{current_lambda_distill_step:.4f} | "
                     f"SoftKeep {soft_keep_ratio:.4f} | "
                     f"HardKeep {hard_keep_ratio:.4f} | "
                     f"Temp {current_temp:.3f} | "
                     f"PruningMode {current_pruning_mode} | "
-                    f"Alpha {alpha_value:.4f} | "
+                    f"Alpha(mean) {alpha_value:.4f} | "
                     f"Visual tokens {num_visual_tokens} | "
                     f"LR(adapter) {optimizer.param_groups[0]['lr']:.2e} | "
                     f"{lora_lr_log}"
@@ -2054,44 +2092,33 @@ if __name__ == "__main__":
         stage1_checkpoint=STAGE1_DIR,
         llava15_init=True,
         llava15_model_name="llava-hf/llava-1.5-7b-hf",
-        freeze_llm=False,
         num_epochs=stage2_num_epochs,
         batch_size=2,
         num_workers=4,
         grad_accum_steps=8,
         max_grad_norm=0.5,
-        adapter_lr=1e-5,
-        lora_lr=1e-4,
+        adapter_lr=2e-5,
         weight_decay=0.01,
         keep_ratio=0.333,
         keep_ratio_start=1.0,
-        soft_stage_ratio=0.40,
-        ste_stage_ratio=0.30,
+        soft_stage_ratio=0.33,
+        ste_stage_ratio=0.33,
         lambda_budget=0.03,
-        budget_warmup_ratio=0.0,
-        lambda_distill=0.8,
+        lambda_distill=1.0,
+        lambda_align=0.5,
+        lambda_alpha_kd=0.2,
+        alpha_kd_every_n_steps=20,
+        question_conditioned_alpha=True,
+        attn_distill_layers=[8, 16, 23],
         start_temp=1.5,
         end_temp=0.5,
         max_samples=stage2_max_samples,
-        llm_max_length=256,
-        clip_max_length=64,
-        val_batch_size=4,
-        val_num_workers=2,
-        val_max_samples=val_max_samples,
-        val_every_n_epochs=1,
-        dynamic_budget_enabled=False,
-        dynamic_budget_min_keep_ratio=0.20,
-        dynamic_budget_max_keep_ratio=0.70,
-        dynamic_budget_supervision_mode="heuristic",
         multi_ratio_enabled=True,
         multi_ratio_values=[0.056, 0.111, 0.223, 0.4, 0.5, 1.0],
         multi_ratio_probs=[1.5, 1.5, 1.4, 1.2, 1.0, 1.0],
-        multi_ratio_low_focus_start_ratio=0.70,
-        multi_ratio_low_focus_power=0.5,
         use_ratio_adaptive_loss=True,
-        dynamic_budget_start_ratio=1.0,
-        projector_unfreeze_threshold=0.40,
-        projector_finetune_lr=5e-6,
+        dynamic_budget_enabled=False,
+        projector_unfreeze_threshold=0.0,
         enable_tf32=True,
         resume_from=_stage2_resume_from,
         projector_hidden_dim=2048,
