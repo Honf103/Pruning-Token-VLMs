@@ -53,6 +53,9 @@ class PruningVLM(nn.Module):
         dynamic_budget_min_keep_ratio: float = 0.35,
         dynamic_budget_max_keep_ratio: float = 0.85,
         use_merging: bool = False,
+        question_conditioned_alpha: bool = False,
+        text_dim: int = 768,
+        attn_distill_layers: list = None,
     ):
         super().__init__()
 
@@ -74,6 +77,8 @@ class PruningVLM(nn.Module):
         self.dynamic_budget_min_keep_ratio = float(dynamic_budget_min_keep_ratio)
         self.dynamic_budget_max_keep_ratio = float(dynamic_budget_max_keep_ratio)
         self.use_merging = bool(use_merging)
+        self.question_conditioned_alpha = bool(question_conditioned_alpha)
+        self.attn_distill_layers = attn_distill_layers or [8, 16, 23]
 
         # ---------------------------
         # Encoders
@@ -86,7 +91,7 @@ class PruningVLM(nn.Module):
         self.text_encoder = CLIPTextEncoder(model_name=clip_model_name)
 
         vision_dim = self.vision_encoder.config.hidden_size
-        text_dim = self.text_encoder.config.hidden_size
+        clip_text_dim = self.text_encoder.config.hidden_size
 
         # ---------------------------
         # LLM
@@ -108,7 +113,7 @@ class PruningVLM(nn.Module):
             in_dim=vision_dim,
             hidden_dim=projector_hidden_dim,
             out_dim=llm_dim,
-            text_dim=text_dim,
+            text_dim=clip_text_dim,
         )
 
         # If LLaVA-1.5 was used as backbone, load its pretrained projector weights.
@@ -122,10 +127,10 @@ class PruningVLM(nn.Module):
         # Scorers
         # ---------------------------
         self.cls_scorer = CLSScorer(vision_dim=vision_dim, llm_dim=llm_dim)
-        self.text_importance = TextImportanceMLP(dim=text_dim)
+        self.text_importance = TextImportanceMLP(dim=clip_text_dim)
 
         self.instruction_aware = InstructionAwareScorer(
-            text_dim=text_dim,
+            text_dim=clip_text_dim,
             vision_dim=llm_dim,
             hidden_dim=ia_hidden_dim,
         )
@@ -133,6 +138,9 @@ class PruningVLM(nn.Module):
         self.score_fusion = ScoreFusion(
             alpha=alpha,
             learnable=learnable_alpha,
+            question_conditioned=question_conditioned_alpha,
+            text_dim=text_dim,
+            hidden_dim=64,
         )
 
         # ---------------------------
@@ -326,7 +334,13 @@ class PruningVLM(nn.Module):
         # --------------------------------------------------
         # 6) Score fusion: S = alpha * norm(S_ia) + (1-alpha) * norm(S_cls)
         # --------------------------------------------------
-        fused_scores = self.score_fusion(s_ia, s_cls)  # [B, N]
+        # For question-conditioned alpha, pass text CLS token (index 0)
+        text_cls = text_tokens[:, 0, :] if self.question_conditioned_alpha else None
+        fused_scores, predicted_alpha = self.score_fusion(
+            s_ia,
+            s_cls,
+            text_cls_token=text_cls,
+        )  # [B, N], [B,1] or scalar
 
         # --------------------------------------------------
         # 7) Soft gate or hard pruning
@@ -421,7 +435,8 @@ class PruningVLM(nn.Module):
                     attention_mask=_llm_attn,
                     visual_attention_mask=None,
                     labels=None,
-                    output_hidden_states=compute_align_loss,
+                    output_hidden_states=False,
+                    output_attentions=compute_align_loss,
                 )
 
             # ── Distillation: KL(student || teacher) at answer positions ──────
@@ -446,26 +461,40 @@ class PruningVLM(nn.Module):
                     n_ans = ans_mask.sum().clamp_min(1.0)
                     distill_loss = (kl * ans_mask).sum() / n_ans * (T ** 2)
 
-            # ── Align: KL(S_ia || hidden-state importance at align_layer) ─────
+            # ── Align: KL(S_ia || LLM cross-attention to visual tokens) ────────
+            # Uses actual LLM attention weights (text->visual) as teacher signal.
+            # This is strictly better than L2-norm of hidden states because it
+            # directly measures which visual tokens the LLM attends to.
             if compute_align_loss and s_ia is not None:
-                t_hs = (
-                    teacher_out.get("hidden_states") if isinstance(teacher_out, dict)
-                    else getattr(teacher_out, "hidden_states", None)
+                t_attentions = (
+                    teacher_out.get("attentions") if isinstance(teacher_out, dict)
+                    else getattr(teacher_out, "attentions", None)
                 )
-                if t_hs is not None and len(t_hs) > align_layer:
-                    # hidden_states[0] = embeddings, [k] = after layer k-1
-                    vis_hs = t_hs[align_layer][:, :N_vis, :]   # [B, N, D]
-                    llm_imp = vis_hs.float().norm(dim=-1)       # [B, N] — activation magnitude
-                    if llm_imp.shape == s_ia.shape:
-                        # Z-score normalize llm_imp so its softmax isn't degenerate
-                        # (raw L2 norms can be 0–100, causing extreme peaked distribution
-                        # with KL ≈ ln(N) ≈ 6.36 that never converges)
-                        llm_imp_z = (llm_imp - llm_imp.mean(dim=-1, keepdim=True)) / (
-                            llm_imp.std(dim=-1, keepdim=True) + 1e-6
-                        )
+                if t_attentions is not None and len(t_attentions) > 0:
+                    # Collect attention to visual tokens from target layers
+                    # visual tokens are the first N_vis tokens in the LLM sequence
+                    layer_importances = []
+                    for layer_idx in self.attn_distill_layers:
+                        if layer_idx >= len(t_attentions):
+                            continue
+                        attn = t_attentions[layer_idx]  # [B, num_heads, seq_len, seq_len]
+                        # text tokens attend to visual prefix: attn[:, :, N_vis:, :N_vis]
+                        seq_len = attn.size(2)
+                        if seq_len > N_vis:
+                            # [B, num_heads, L_text, N_vis] -> mean over heads and text positions
+                            attn_to_vis = attn[:, :, N_vis:, :N_vis]        # [B, h, L, N]
+                            importance = attn_to_vis.mean(dim=(1, 2))        # [B, N]
+                            layer_importances.append(importance)
+
+                    if layer_importances:
+                        # Average importance across selected layers
+                        teacher_importance = torch.stack(layer_importances, dim=0).mean(0)  # [B, N]
+                        # Clamp to avoid degenerate softmax
+                        teacher_importance = teacher_importance.clamp(min=0.0)
+
                         align_loss = F.kl_div(
                             F.log_softmax(s_ia, dim=-1),
-                            F.softmax(llm_imp_z.detach(), dim=-1),
+                            F.softmax(teacher_importance.detach() * 10.0, dim=-1),
                             reduction="batchmean",
                         )
 
@@ -473,6 +502,7 @@ class PruningVLM(nn.Module):
             "logits": logits,
             "loss": loss,
             "fused_scores": fused_scores,
+            "predicted_alpha": predicted_alpha,
             "s_cls": s_cls,
             "s_ia": s_ia,
             "beta": beta,
@@ -488,6 +518,7 @@ class PruningVLM(nn.Module):
             "dynamic_keep_ratio": dynamic_keep_ratio,
             "align_loss": align_loss,
             "distill_loss": distill_loss,
+            "alpha_kd_loss": None,
         }
 
         if return_intermediates:
