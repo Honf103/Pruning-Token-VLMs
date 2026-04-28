@@ -1,21 +1,27 @@
 # Listen to the Prompt: Instruction-Aware Token Pruning for Vision-Language Models
 
-This repository implements an instruction-aware token pruning VLM pipeline with
-optional token merging for higher efficiency at low visual-token budgets.
+# Listen to the Prompt: Instruction-Aware Token Pruning for Vision-Language Models
 
-Core idea: keep visual tokens that matter for the current question, not just
-globally salient tokens.
+This repository implements instruction-aware token pruning for VLMs, with an
+updated Knowledge Distillation (KD) training recipe focused on fair comparison.
 
-## Goals
+Core idea: keep visual tokens relevant to the current question, then distill
+from the frozen teacher backbone into lightweight scorer modules.
 
-- Instruction-aware token selection conditioned on the text query.
-- Robust performance across multiple keep ratios (single model, multi-budget use).
-- Efficient inference via hard top-k pruning, with optional token merging.
+## What Is Updated
+
+The latest Stage 2 training logic has these key changes.
+
+1. Backbone frozen for fair comparison.
+2. Proper attention-based alignment KD replaces hidden-state proxy alignment.
+3. Question-conditioned score fusion predicts alpha per sample from text CLS.
+4. Added alpha KD supervision to teach when instruction-aware vs CLS scoring
+   should dominate.
 
 ## Project Structure
 
 ```
-VLM_Project/
+Pruning-Token-VLMs/
 |-- src/
 |   |-- train.py
 |   |-- eval.py
@@ -24,185 +30,166 @@ VLM_Project/
 |   |-- datasets/
 |   |   |-- data/                 # local datasets (ignored by git)
 |   |-- checkpoints/              # local checkpoints (ignored by git)
-|   |-- eval_outputs_paper/       # eval artifacts (ignored by git)
-|   |-- tmp_eval/                 # temp outputs (ignored by git)
 |-- README.md
-|-- .gitignore
 ```
 
-## ASCII Diagram (Model Architecture: Instruction-Aware + Merge)
+## Stage-Wise Trainable Plan
 
-```
-IMAGE BRANCH
-------------
-[Image]
-  -> [CLIP Vision Encoder (ViT-L/14-336)]
-       outputs: cls_emb [B,1024], patch_tokens [B,576,1024]
-  -> [Projector: Linear(1024->4096) -> GELU -> Linear(4096->4096)]
-       z [B,576,4096]
-  -> [CLSScorer]
-       cls_q = normalize(Linear(cls_emb))
-       S_cls[i] = cosine(cls_q, z_i)                         # [B,576]
+### Stage 1
 
-TEXT BRANCH
------------
-[Question / Instruction]
-  -> [CLIP Text Encoder]
-       text_tokens [B,L,768]
-  -> [TextImportanceMLP]
-       beta = softmax(MLP(text_tokens))                      # [B,L]
+Trainable by default.
 
-CROSS-MODAL INSTRUCTION-AWARE SCORING
--------------------------------------
-[InstructionAwareScorer: multi-head text->visual attention]
-  Q = LN(W_q * text_tokens), K = LN(W_k * z)
-  A = softmax(QK^T / sqrt(d))                                # [B,L,576]
-  S_ia = beta^T * A                                          # [B,576]
+1. projector
 
-SCORE FUSION + PRUNING
-----------------------
-[ScoreFusion]
-  S = alpha * zscore(S_ia) + (1 - alpha) * zscore(S_cls)    # [B,576]
-  alpha in [0,1] (optionally learnable)
+Frozen.
 
-[TokenPruner: top-k by S]
-  keep K = round(keep_ratio * 576)
-  kept tokens: z_keep [B,K,4096]
+1. vision_encoder
+2. text_encoder
+3. cls_scorer
+4. text_importance
+5. instruction_aware
+6. score_fusion
+7. token_pruner
+8. llm
 
-  if use_merging=True:
-    each dropped token -> nearest kept token (cosine)
-    score-weighted merge:
-      t_tilde_j = (s_j*t_j + sum_{i->j} s_i*t_i) / (s_j + sum_{i->j} s_i)
+Optional mode.
 
-LLM DECODING
-------------
-[Pruned/Merged visual tokens + text tokens]
-  -> [LLM Decoder (Vicuna/LLaVA backbone)]
-  -> [Response]
-```
+1. If train_budget_head_only=True, projector main projection is frozen and only
+   projector budget head branches are trained.
 
-## Method Overview
+### Stage 2 (Current KD Recipe)
 
-- Visual branch: CLIP ViT-L/14-336 image tokens.
-- Text branch: CLIP text tokens from the question/prompt.
-- Scoring modules:
-  - CLS-based saliency scorer.
-  - Instruction-aware cross-modal scorer.
-  - Learnable score fusion for final token importance.
-- Pruning curriculum during Stage 2:
-  - Early training: soft gates for dense gradient flow.
-  - Middle: STE gating for sharper discrete behavior.
-  - Late: structural top-k behavior aligned with deployment.
-- Multi-ratio training:
-  - Sample keep ratios during training to improve robustness at different budgets.
-- Dynamic budget (optional):
-  - Predict/adjust keep ratio per sample within configured min-max bounds.
-- Token merging:
-  - Optional merge at inference (and enabled in current Stage 2 construction) to
-    reduce effective token load further.
+Trainable.
+
+1. cls_scorer
+2. text_importance
+3. instruction_aware
+4. score_fusion
+
+Frozen.
+
+1. vision_encoder
+2. text_encoder
+3. projector
+4. llm
+
+This is the intended fair-comparison setup in current code.
+
+## KD Losses in Stage 2
+
+Total loss is:
+
+$$
+\mathcal{L}=\mathcal{L}_{lm}+\lambda_{budget}\mathcal{L}_{budget}+\lambda_{distill}\mathcal{L}_{distill}+\lambda_{align}\mathcal{L}_{align}+\lambda_{\alpha}\mathcal{L}_{\alpha\_kd}
+$$
+
+Terms.
+
+1. LM loss: standard causal LM loss on answer tokens.
+2. Distill loss: KL between student and teacher text logits.
+3. Align loss: KL between scorer importance and teacher cross-attention
+   importance from selected LLM layers.
+4. Alpha KD loss: MSE between predicted alpha and alpha target computed from
+   LM-loss gap between alpha=1 and alpha=0 pruning passes.
+5. Budget loss: keep-ratio regularization.
 
 ## Environment Setup
 
-From the project root:
+From project root.
 
 ```bash
-cd /workspace/VLM_Project
+cd /workspace/Pruning-Token-VLMs
 python -m venv .venv
 source .venv/bin/activate
 pip install -r src/requirements.txt
 ```
 
-## Dataset
+## Dataset Layout
 
-Expected VQAv2 root used by training script:
+Expected root used by training script:
 
 ```text
 src/datasets/data/vqa_v2/
 ```
 
-Expected files/folders include:
+Required files/folders.
 
-- `v2_OpenEnded_mscoco_train2014_questions.json`
-- `v2_mscoco_train2014_annotations.json`
-- `v2_OpenEnded_mscoco_val2014_questions.json`
-- `v2_mscoco_val2014_annotations.json`
-- `train2014/`
-- `val2014/`
+1. v2_OpenEnded_mscoco_train2014_questions.json
+2. v2_mscoco_train2014_annotations.json
+3. v2_OpenEnded_mscoco_val2014_questions.json
+4. v2_mscoco_val2014_annotations.json
+5. train2014/
+6. val2014/
 
-## Training
+## How To Train the New Code
 
-Run full pipeline:
+### Quick Run (full pipeline)
 
 ```bash
-cd /workspace/VLM_Project
+cd /workspace/Pruning-Token-VLMs
 python src/train.py
 ```
 
-Current script behavior in src/train.py:
+Behavior.
 
-- Stage 1: projector alignment (auto-skip if Stage 1 checkpoint exists).
-- Stage 2: visual instruction tuning + instruction-aware pruning.
-- Step-level pruning curriculum: soft -> ste -> structural.
-- Multi-ratio sampling support and ratio-adaptive loss scaling.
-- Dynamic budget hooks (configurable; off in current default recipe).
-- Token merging is enabled in the current model construction for Stage 2.
-- Auto-resume from latest Stage 2 checkpoint when available.
+1. Stage 1 runs first and auto-skips if Stage 1 checkpoint already exists.
+2. Stage 2 then runs with KD-focused frozen-backbone setup.
+3. Auto-resume uses latest Stage 2 checkpoint if present.
+
+### Current Default Stage 2 Recipe in Code
+
+The bottom call in src/train.py currently uses.
+
+1. keep_ratio=0.333
+2. lambda_distill=1.0
+3. lambda_align=0.5
+4. lambda_alpha_kd=0.2
+5. alpha_kd_every_n_steps=20
+6. question_conditioned_alpha=True
+7. attn_distill_layers=[8, 16, 23]
+8. dynamic_budget_enabled=False
+9. projector_unfreeze_threshold=0.0
+
+### What To Watch While Training
+
+Stage 2 logs include.
+
+1. LM
+2. Budget
+3. Distill
+4. AlignLoss
+5. AlphaKD
+6. Alpha(mean)
+7. SoftKeep / HardKeep
+8. Keep(schedule/sample)
+
+These are the most useful signals to verify KD is behaving as expected.
 
 ## Evaluation / Inference
 
 ```bash
-cd /workspace/VLM_Project
+cd /workspace/Pruning-Token-VLMs
 python src/eval.py
 python src/infer.py
 ```
 
-MME evaluation examples:
+MME examples.
 
 ```bash
-cd /workspace/VLM_Project/src
+cd /workspace/Pruning-Token-VLMs/src
 
-# single keep ratio
 python test_mme.py --keep_ratio 0.7
-
-# keep-ratio sweep (baseline)
 python test_mme.py --sweep_keep_ratio
-
-# keep-ratio sweep + token merging
 python test_mme.py --sweep_keep_ratio --sweep_ratios 1.0 0.7 0.4 0.2 0.1 --use_merging
-```
-
-Useful flags in src/test_mme.py:
-
-- --task_type all|perception|cognition
-- --tasks <task1 task2 ...>
-- --use_merging
-- --batch_size 0 (auto batch size by free VRAM + keep ratio)
-
-## Git Notes (Code Only, No Data)
-
-The repository is configured to avoid pushing local heavy artifacts:
-
-- `src/datasets/data/`
-- `src/checkpoints/`
-- `src/eval_outputs_paper/`
-- `src/tmp_eval/`
-
-If a folder was tracked before, untrack it without deleting local files:
-
-```bash
-git rm -r --cached --ignore-unmatch \
-  src/datasets/data src/checkpoints src/eval_outputs_paper src/tmp_eval
-git add .gitignore
-git commit -m "Stop tracking local data/artifacts"
 ```
 
 ## Reproducibility Tips
 
-- Keep `seed` fixed across runs.
-- Log keep-ratio schedule/sample, soft/hard keep stats, and validation metrics.
-- Compare both merge OFF and merge ON in MME sweeps.
-- Save both `latest` and `best` checkpoints.
+1. Keep seed fixed.
+2. Track best and latest checkpoints.
+3. Compare both merge OFF and merge ON for MME sweeps.
+4. Monitor AlignLoss and AlphaKD together, not only LM loss.
 
 ## License
 
-Add your preferred license here (MIT/Apache-2.0/etc.).
+Add your preferred license here.
