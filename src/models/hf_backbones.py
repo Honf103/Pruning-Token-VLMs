@@ -189,6 +189,7 @@ class LLaVALM(nn.Module):
         labels: torch.Tensor = None,
         return_logits: bool = True,
         output_hidden_states: bool = False,
+        output_attentions: bool = False,
     ):
         input_embed_layer = self.model.get_input_embeddings()
 
@@ -269,9 +270,15 @@ class LLaVALM(nn.Module):
             labels=full_labels,
             return_dict=True,
             output_hidden_states=output_hidden_states,
+            output_attentions=output_attentions,
         )
 
-        return outputs
+        return {
+            "logits": outputs.logits if return_logits else None,
+            "loss": getattr(outputs, "loss", None),
+            "hidden_states": getattr(outputs, "hidden_states", None),
+            "attentions": getattr(outputs, "attentions", None),
+        }
 
     def tokenize(self, texts, **kwargs):
         return self.tokenizer(
