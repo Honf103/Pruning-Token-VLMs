@@ -17,8 +17,9 @@ class CLIPVisionEncoder(nn.Module):
     """
     Wrapper around HuggingFace CLIP vision encoder.
 
-    Returns patch-level visual embeddings
-    (including the [CLS] token unless removed).
+    Returns raw penultimate-layer vision tokens (matching LLaVA-1.5 expectations).
+    Additionally loads CLIP's visual projection to map tokens into the joint
+    embedding space for scoring, while keeping it frozen.
     """
 
     def __init__(
@@ -30,10 +31,19 @@ class CLIPVisionEncoder(nn.Module):
         super().__init__()
         transformers = _get_hf_transformers()
 
+        # Load raw CLIP vision encoder (no projection) to match LLaVA expectations
         self.model = transformers.CLIPVisionModel.from_pretrained(model_name)
         self.config = self.model.config
         self.normalize = normalize
         self.remove_cls_token = remove_cls_token
+
+        # Load CLIP's visual projection for scoring (frozen, not trainable)
+        clip_with_proj = transformers.CLIPVisionModelWithProjection.from_pretrained(model_name)
+        self.visual_projection = clip_with_proj.visual_projection
+        self.projection_dim = clip_with_proj.config.projection_dim
+        # Freeze the projection
+        for p in self.visual_projection.parameters():
+            p.requires_grad = False
 
         self.register_buffer(
             "_mean",
@@ -46,25 +56,28 @@ class CLIPVisionEncoder(nn.Module):
             persistent=False,
         )
 
+    def project_features(self, vision_tokens: torch.Tensor) -> torch.Tensor:
+        """
+        Map raw CLIP vision tokens into CLIP's frozen joint embedding space.
+        Used only for scoring; does not affect the LLaVA projector path.
+        """
+        return self.visual_projection(vision_tokens)
+
     def forward(self, images: torch.Tensor):
         """
         Returns (cls_embedding, patch_tokens):
             cls_embedding : [B, D]      — CLIP CLS token (raw vision space)
             patch_tokens  : [B, 576, D] — patch embeddings (CLS removed)
-        The `remove_cls_token` flag is kept for backward compat but CLS is
-        always returned separately so callers can use it for visual saliency.
         """
         if self.normalize:
             images = (images - self._mean) / self._std
 
         # LLaVA-1.5 uses CLIP vision features from the penultimate layer
-        # (vision_feature_layer = -2). Using last_hidden_state here creates a
-        # feature distribution mismatch with the pretrained projector.
         outputs = self.model(pixel_values=images, output_hidden_states=True)
         all_tokens = outputs.hidden_states[-2]  # [B, 1+N, D]
 
-        cls_embedding  = all_tokens[:, 0, :]   # [B, D]
-        patch_tokens   = all_tokens[:, 1:, :]  # [B, N, D]
+        cls_embedding = all_tokens[:, 0, :]
+        patch_tokens = all_tokens[:, 1:, :]
         return cls_embedding, patch_tokens
 
 
@@ -136,11 +149,43 @@ class LLaVALM(nn.Module):
                 torch_dtype=torch_dtype,
                 device_map="cpu",
             )
-            self.model = _llava_full.language_model
+            import copy
+            from transformers import AutoModelForCausalLM
+
+            # Handle two transformers layouts:
+            #  Old: LlavaForConditionalGeneration.language_model  → CausalLM (has lm_head)
+            #  New: LlavaForConditionalGeneration.model.language_model → base model only
+            #       LlavaForConditionalGeneration.lm_head         → separate linear
+            _inner = getattr(_llava_full, "model", _llava_full)
+            _base_lm = getattr(_inner, "language_model", None) or getattr(_llava_full, "language_model")
+            _lm_head = getattr(_llava_full, "lm_head", None)
+
+            if _lm_head is not None and not hasattr(_base_lm, "lm_head"):
+                # New-style: base model + separate lm_head → reconstruct as CausalLM
+                causal_lm = AutoModelForCausalLM.from_config(
+                    _llava_full.config.text_config,
+                    torch_dtype=torch_dtype,
+                )
+                # Base transformer weights are usually under causal_lm.model
+                _inner_key = "model"
+                if hasattr(causal_lm, _inner_key):
+                    getattr(causal_lm, _inner_key).load_state_dict(
+                        _base_lm.state_dict(), strict=True
+                    )
+                else:
+                    causal_lm.load_state_dict(_base_lm.state_dict(), strict=False)
+                causal_lm.lm_head.load_state_dict(_lm_head.state_dict(), strict=True)
+                self.model = causal_lm
+            else:
+                # Old-style: language_model is already a full CausalLM
+                self.model = _base_lm
+
             # Expose pretrained projector weights so PruningVLM can init from them.
             # We deepcopy to CPU to free the rest of the LLaVA checkpoint immediately.
-            import copy
-            self._llava_projector = copy.deepcopy(_llava_full.multi_modal_projector).cpu()
+            self._llava_projector = copy.deepcopy(
+                getattr(_inner, "multi_modal_projector", None)
+                or getattr(_llava_full, "multi_modal_projector")
+            ).cpu()
             del _llava_full
             gc.collect()
         else:
@@ -263,6 +308,13 @@ class LLaVALM(nn.Module):
         inputs_embeds       = torch.cat(embed_list, dim=0)   # [B, L-1+K, D]
         full_attention_mask = torch.cat(mask_list,  dim=0)   # [B, L-1+K]
         full_labels         = torch.cat(lbl_list,   dim=0) if has_lbl else None
+
+        inputs_embeds = torch.nan_to_num(
+            inputs_embeds,
+            nan=0.0,
+            posinf=100.0,
+            neginf=-100.0,
+        )
 
         outputs = self.model(
             inputs_embeds=inputs_embeds,
