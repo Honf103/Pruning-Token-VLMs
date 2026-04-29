@@ -126,12 +126,14 @@ class PruningVLM(nn.Module):
         # ---------------------------
         # Scorers
         # ---------------------------
-        self.cls_scorer = CLSScorer(vision_dim=vision_dim, llm_dim=llm_dim)
+        # Use the frozen CLIP projection dimension for scoring
+        clip_joint_dim = self.vision_encoder.projection_dim
+        self.cls_scorer = CLSScorer(vision_dim=clip_joint_dim, llm_dim=clip_joint_dim)
         self.text_importance = TextImportanceMLP(dim=clip_text_dim)
 
         self.instruction_aware = InstructionAwareScorer(
             text_dim=clip_text_dim,
-            vision_dim=llm_dim,
+            vision_dim=clip_joint_dim,
             hidden_dim=ia_hidden_dim,
         )
 
@@ -299,8 +301,12 @@ class PruningVLM(nn.Module):
         )  # [B, L, Dt]
 
         # --------------------------------------------------
-        # 2) Project to LLM space
+        # 2) Build scoring features in frozen CLIP space, then project once
+        #    to LLM space after token selection.
         # --------------------------------------------------
+        cls_score_tokens = self.vision_encoder.project_features(cls_emb)
+        visual_score_tokens = self.vision_encoder.project_features(visual_tokens)
+
         z = self.projector(visual_tokens)  # [B, N, D_llm]
         dynamic_keep_ratio = self.get_dynamic_keep_ratio(
             z,
@@ -314,19 +320,19 @@ class PruningVLM(nn.Module):
         beta = self.text_importance(text_tokens, attention_mask)  # [B, L]
 
         # --------------------------------------------------
-        # 4) Visual saliency scoring: cosine(W·CLS_emb, patch_token_i)
+        # 4) Visual saliency scoring: cosine(CLS_emb, patch_token_i)
         # --------------------------------------------------
         s_cls = self.cls_scorer(
-            cls_embedding=cls_emb,
-            patch_tokens=z,
+            cls_embedding=cls_score_tokens,
+            patch_tokens=visual_score_tokens,
         )  # [B, N]
 
         # --------------------------------------------------
-        # 5) Instruction-aware scoring: multi-head text→visual cross-attention
+        # 5) Instruction-aware scoring: parameter-free text→visual attention
         # --------------------------------------------------
         s_ia, A = self.instruction_aware(
             text_tokens=text_tokens,
-            visual_tokens=z,
+            visual_tokens=visual_score_tokens,
             beta=beta,
             text_attention_mask=attention_mask,
         )  # [B, N]
@@ -341,6 +347,8 @@ class PruningVLM(nn.Module):
             s_cls,
             text_cls_token=text_cls,
         )  # [B, N], [B,1] or scalar
+        fused_scores = torch.nan_to_num(fused_scores, nan=0.0, posinf=20.0, neginf=-20.0)
+        fused_scores = fused_scores.clamp(-20.0, 20.0)
 
         # --------------------------------------------------
         # 7) Soft gate or hard pruning
@@ -380,6 +388,13 @@ class PruningVLM(nn.Module):
                     keep_ratio=dynamic_keep_ratio,
                 )
                 gate_mask_used = soft_gates  # used for budget_loss
+
+        visual_for_llm = torch.nan_to_num(
+            visual_for_llm,
+            nan=0.0,
+            posinf=100.0,
+            neginf=-100.0,
+        )
 
         # --------------------------------------------------
         # 8) LLM forward
