@@ -596,28 +596,31 @@ def generate_answers(
     cls_emb, visual_tokens = model.vision_encoder(images)
     text_tokens = model.text_encoder(clip_input_ids, clip_attention_mask)
 
+    cls_score_tokens = model.vision_encoder.project_features(cls_emb)
+    visual_score_tokens = model.vision_encoder.project_features(visual_tokens)
     z = model.projector(visual_tokens)
 
     # ── Full scoring pipeline — must exactly match pruning_vlm.forward() ──
     # 1) Text importance weights β
     beta = model.text_importance(text_tokens, clip_attention_mask)   # [B, L]
 
-    # 2) CLS-style scorer
+    # 2) CLS-style scorer in frozen CLIP joint space
     s_cls = model.cls_scorer(
-        cls_embedding=cls_emb,
-        patch_tokens=z,
+        cls_embedding=cls_score_tokens,
+        patch_tokens=visual_score_tokens,
     )  # [B, N]
 
     # 3) Instruction-aware scorer (uses β for weighted pooling)
     s_ia, A = model.instruction_aware(
         text_tokens=text_tokens,
-        visual_tokens=z,
+        visual_tokens=visual_score_tokens,
         beta=beta,
         text_attention_mask=clip_attention_mask,
     )  # [B, N]
 
     # 4) Score fusion: S = alpha * norm(S_ia) + (1-alpha) * norm(S_cls)
-    fused_scores = model.score_fusion(s_ia, s_cls)  # [B, N]
+    text_cls = text_tokens[:, 0, :] if getattr(model, "question_conditioned_alpha", False) else None
+    fused_scores, _ = model.score_fusion(s_ia, s_cls, text_cls_token=text_cls)  # [B, N], [B,1] or scalar
 
     dynamic_keep_ratio = model.get_dynamic_keep_ratio(
         z,
