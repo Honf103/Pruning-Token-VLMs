@@ -1334,7 +1334,7 @@ def train_stage2(
     unfreeze_module(model.instruction_aware)
     unfreeze_module(model.score_fusion)
 
-    print("[Stage2] Backbone FROZEN. Training scorer only (~12M params).")
+    print("[Stage2] Backbone FROZEN. Training lightweight beta/alpha heads (~0.15M params).")
     print_trainable_parameters(model)
 
     model = model.to(device)
@@ -1378,6 +1378,16 @@ def train_stage2(
             if "optimizer_state_dict" in _ts:
                 _pending_opt_sched_state = _ts
             print(f"[Resume] start_epoch={start_epoch}")
+
+            # If the resumed run already reached/exceeded requested num_epochs,
+            # do a fresh Stage-2 run instead of silently skipping the training loop.
+            if start_epoch >= num_epochs:
+                print(
+                    f"[Resume] Checkpoint already finished epoch {start_epoch} "
+                    f"(num_epochs={num_epochs}). Restarting Stage-2 from epoch 0 with fresh optimizer."
+                )
+                start_epoch = 0
+                _pending_opt_sched_state = None
 
         print("Resumed successfully.")
 
@@ -1522,6 +1532,8 @@ def train_stage2(
     skipped_invalid_loss = 0
     total_truncated_samples = 0
     total_empty_answer_after_trunc = 0
+    last_epoch_avg_loss = None
+    last_val_metrics = None
 
     total_steps = (num_epochs - start_epoch) * len(dataloader)
 
@@ -1717,6 +1729,26 @@ def train_stage2(
                 if torch.isnan(lm_loss) or torch.isinf(lm_loss):
                     skipped_invalid_loss += 1
                     print(f"[Warning] Skip step {step}: lm_loss is invalid ({lm_loss.item()}).")
+                    if skipped_invalid_loss <= 10:
+                        def _stat(name, t):
+                            if t is None:
+                                return f"{name}=None"
+                            return (
+                                f"{name}: shape={tuple(t.shape)} dtype={t.dtype} "
+                                f"nan={torch.isnan(t).any().item()} "
+                                f"inf={torch.isinf(t).any().item()} "
+                                f"min={t.min().item():.4e} max={t.max().item():.4e}"
+                            )
+
+                        print("[NaN Debug] " + _stat("fused_scores", outputs.get("fused_scores")))
+                        print("[NaN Debug] " + _stat("soft_gates", outputs.get("soft_gates")))
+                        print("[NaN Debug] " + _stat("visual_for_llm", outputs.get("visual_for_llm")))
+                        print("[NaN Debug] " + _stat("projected_tokens", outputs.get("projected_tokens")))
+                        print(
+                            f"[NaN Debug] labels_valid={(labels != -100).sum().item()} "
+                            f"keep_ratio={current_keep_ratio:.4f} "
+                            f"temp={current_temp:.4f} pruning_mode={current_pruning_mode}"
+                        )
                     optimizer.zero_grad(set_to_none=True)
                     continue
 
@@ -1905,6 +1937,7 @@ def train_stage2(
                 )
 
         avg_loss = total_loss / max(1, num_effective_steps)
+        last_epoch_avg_loss = float(avg_loss)
         print(f"Epoch {epoch + 1} finished | avg_loss = {avg_loss:.4f}")
         print(
             f"Skipped empty batches: {skipped_empty_batch} | "
@@ -1937,6 +1970,7 @@ def train_stage2(
                 f"empty_prediction_rate={val_metrics['empty_prediction_rate']:.4f} | "
                 f"samples={val_metrics['num_samples']}"
             )
+            last_val_metrics = val_metrics
         else:
             print(f"[Val] epoch {epoch + 1} skipped (val_every_n_epochs={val_every_n_epochs}).")
 
@@ -2021,6 +2055,13 @@ def train_stage2(
         save_lora_and_non_llm_trainables(model, latest_dir)
         print(f"[Checkpoint] Saved latest checkpoint (epoch {epoch + 1}) → {latest_dir}")
 
+    return {
+        "last_epoch_avg_loss": last_epoch_avg_loss,
+        "best_loss": best_loss,
+        "best_val_vqa_soft_accuracy": best_val_vqa_soft_acc,
+        "last_val_metrics": last_val_metrics,
+    }
+
 
 if __name__ == "__main__":
     import os as _os
@@ -2038,9 +2079,10 @@ if __name__ == "__main__":
     )
 
     stage1_max_samples = 100_000
-    stage2_max_samples = 200_000
+    stage2_max_samples = None
     stage2_num_epochs = 2
     val_max_samples = 500
+
 
     print("=" * 60)
     print("Training target: SOTA-oriented accuracy under ~1 day budget")
@@ -2085,28 +2127,25 @@ if __name__ == "__main__":
         )
 
     # ── Stage 2: Pruning-Aware Accuracy Tuning ───────────────────────────────
-    # Target: keep token pruning active and competitive at low budgets.
-    # Strategy: train scorer + projector + LoRA-LLM jointly on full data with a
-    # multi-ratio curriculum, while keeping budget/distillation losses enabled.
-    train_stage2(
+    base_stage2_kwargs = dict(
         stage1_checkpoint=STAGE1_DIR,
         llava15_init=True,
         llava15_model_name="llava-hf/llava-1.5-7b-hf",
         num_epochs=stage2_num_epochs,
-        batch_size=2,
+        batch_size=3,
         num_workers=4,
         grad_accum_steps=8,
         max_grad_norm=0.5,
         adapter_lr=2e-5,
         weight_decay=0.01,
-        keep_ratio=0.333,
+        keep_ratio=0.5,
         keep_ratio_start=1.0,
         soft_stage_ratio=0.33,
         ste_stage_ratio=0.33,
         lambda_budget=0.03,
-        lambda_distill=1.0,
-        lambda_align=0.5,
-        lambda_alpha_kd=0.2,
+        lambda_distill=0.0,
+        lambda_align=0.0,
+        lambda_alpha_kd=0.0,
         alpha_kd_every_n_steps=20,
         question_conditioned_alpha=True,
         attn_distill_layers=[8, 16, 23],
@@ -2126,3 +2165,6 @@ if __name__ == "__main__":
         best_checkpoint_name=BEST_STAGE2_DIR_NAME,
         latest_checkpoint_name=LATEST_STAGE2_DIR_NAME,
     )
+
+
+    train_stage2(**base_stage2_kwargs)
